@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>年号 ↔ 西暦</title>
+
+<!-- ホーム画面に追加して単体起動できるようにする -->
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./icons/icon-180.png">
+<link rel="icon" href="./icons/icon-32.png" sizes="32x32" type="image/png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="年号">
+<!-- ブラウザ枠の色は manifest より meta が優先されるので、明暗それぞれ指定する -->
+<meta name="theme-color" content="#f6f6f8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d0d10" media="(prefers-color-scheme: dark)">
+<style>
+:root{
+  --bg:#f6f6f8; --fg:#17171b; --fgv:23 23 27; --sub:#8b8b93; --card:#ffffff; --line:#e4e4e9;
+  --meiji:111 127 150; --taisho:95 143 136; --showa:192 138 69;
+  --heisei:90 124 176; --reiwa:138 111 166;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#0d0d10; --fg:#f1f1f4; --fgv:241 241 244; --sub:#7f7f89; --card:#191920; --line:#292930;
+    --meiji:125 142 166; --taisho:107 159 152; --showa:208 154 85;
+    --heisei:106 140 192; --reiwa:154 127 182;
+  }
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%}
+body{
+  background:var(--bg); color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans JP",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;
+  overscroll-behavior:none; touch-action:manipulation;
+  font-variant-numeric:tabular-nums;
+}
+#app{
+  display:flex; flex-direction:column;
+  height:100dvh;
+  /* iPad/PC で横に伸びきって間延びしないよう、スマホに近い幅で中央に置く */
+  max-width:520px; margin-inline:auto;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+/* ================= 上: フリックレール（中央行が答え） ================= */
+.top{ flex:1; min-height:0; display:flex; align-items:center; justify-content:center }
+.railWrap{ position:relative; width:100% }
+
+/* 中央の枠。選択年の元号色で染める。
+   height / top / padding は表示行数に応じて JS が設定する（下の値は初期値） */
+.focus{
+  position:absolute; left:10px; right:10px;
+  top:calc(var(--row) * 2); height:var(--row);
+  border-radius:13px; background:rgb(var(--era) / .16);
+  pointer-events:none; transition:background-color .2s;
+}
+/* mandatory は毎回強制的に吸着するため慣性を殺す。proximity にして遠くまで滑らせ、
+   行間で止まった場合は JS が最近接の行へ寄せる */
+.rail{
+  height:calc(var(--row) * 5);
+  overflow-y:scroll; scroll-snap-type:y proximity;
+  -webkit-overflow-scrolling:touch; overscroll-behavior:contain;
+  touch-action:pan-y; scrollbar-width:none;
+}
+.rail::-webkit-scrollbar{ display:none }
+.rows{ padding:calc(var(--row) * 2) 0 }
+
+/* 見えない軸を1本通し、西暦は右揃え・和暦は左揃え。
+   中央行で文字が大きくなっても軸から外へ育つだけなので縦線が崩れない */
+.row{
+  height:var(--row); scroll-snap-align:center;
+  display:flex; align-items:center; padding:0 14px; cursor:pointer;
+  -webkit-user-select:none; user-select:none;
+}
+/* 慣性スクロール中に毎行リフローするのを避けるため、サイズ変化に transition はかけない。
+   overflow:hidden は極端に狭い端末での保険 */
+.row .ry{ flex:0 0 30%; min-width:0; overflow:hidden; padding-right:7px; text-align:right; white-space:nowrap;
+          font-weight:400; font-size:15px; line-height:1; color:var(--sub) }
+.row .rw{ flex:0 0 70%; min-width:0; overflow:hidden; padding-left:7px;  text-align:left;  white-space:nowrap;
+          font-weight:500; font-size:15px; line-height:1; color:var(--sub) }
+/* 中央行＝答え。狭い端末でもはみ出さないよう幅に追従させる */
+.row.mid .ry{ font-weight:400; font-size:clamp(22px, 6.7vw, 26px); line-height:1; color:var(--fg) }
+.row.mid .rw{ font-weight:650; font-size:32px; line-height:1; color:var(--fg) }
+/* 改元年は情報量が多いので中央行だけ縮める */
+.row.mid.tr .ry{ font-size:clamp(19px, 6.2vw, 24px) }
+.row.mid.tr .rw{ font-size:clamp(16px, 5.1vw, 22px) }
+.row .dt{ font-weight:400; font-size:clamp(9px, 2.6vw, 11px); line-height:1; color:var(--sub); margin-left:5px }
+.row:not(.mid) .dt{ display:none }   /* 周辺行では日付を出さない */
+
+/* ================= 下: 帯（粗い移動） ================= */
+.bottom{ flex:none }
+.bHead{ height:34px; padding:0 12px; display:flex; align-items:center; justify-content:space-between; gap:8px }
+.bHead .info{ display:flex; align-items:baseline; gap:8px; min-width:0 }
+.bHead .nm{ font-weight:650; font-size:15px; line-height:1 }
+.bHead .rg{ font-weight:400; font-size:11px; line-height:1; color:var(--sub) }
+/* 今年に戻る。帯のすぐ上・右端なので親指が届き、元号名（左）と取り合わない */
+.home{
+  appearance:none; border:0; flex:none; cursor:pointer;
+  -webkit-user-select:none; user-select:none;
+  background:var(--card); color:var(--fg);
+  border-radius:9px; padding:9px 13px;
+  font-weight:600; font-size:12px; line-height:1;
+  box-shadow:0 1px 0 var(--line); transition:opacity .2s;
+}
+.home:active{ transform:scale(.95) }
+.home.off{ opacity:.35 }   /* すでに今年・全体表示にいる */
+.scrub{ position:relative; padding:0 12px }
+.band{
+  position:relative; height:92px; border-radius:14px; overflow:hidden;
+  touch-action:none; cursor:crosshair; background:var(--card);
+  -webkit-user-select:none; user-select:none;   /* 元号名が選択されてハイライトされるのを防ぐ */
+}
+.segs{ position:absolute; inset:0; transition:opacity .13s }
+/* 元号にドリルインしたときの定規。1年ごとのヘアライン */
+.segs.ruler{
+  background-color:rgb(var(--era));
+  background-image:repeating-linear-gradient(90deg, rgb(255 255 255 / .22) 0 1px, transparent 1px var(--step));
+}
+.seg{ position:absolute; top:0; bottom:0; display:flex; align-items:flex-end; justify-content:center; padding-bottom:8px }
+.seg .lb{ font-weight:600; font-size:11px; line-height:1; color:#fff; opacity:.92; writing-mode:vertical-rl; letter-spacing:.08em }
+.seg .lb.wide{ writing-mode:horizontal-tb }
+.caret{ position:absolute; top:0; bottom:0; width:2px; background:var(--fg); opacity:.85; pointer-events:none }
+.ticks{ position:relative; height:24px; margin-top:6px }
+.ticks span{ position:absolute; transform:translateX(-50%); font-weight:400; font-size:10px; line-height:1; color:var(--sub) }
+.hint{ text-align:center; font-weight:400; font-size:11px; line-height:1.4; color:var(--sub); padding:0 16px 14px }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div class="top">
+    <div class="railWrap">
+      <div class="focus" id="focus"></div>
+      <div class="rail" id="rail"><div class="rows" id="rows"></div></div>
+    </div>
+  </div>
+
+  <div class="bottom">
+    <div class="bHead">
+      <span class="info" id="bInfo"></span>
+      <button class="home" id="home">今年</button>
+    </div>
+    <div class="scrub">
+      <div class="band" id="band">
+        <div class="segs" id="segs"></div>
+        <div class="caret" id="caret"></div>
+      </div>
+      <div class="ticks" id="ticks"></div>
+    </div>
+    <div class="hint" id="hint"></div>
+  </div>
+
+</div>
+
+<script>
+/* ================= データ ================= */
+const CUR  = new Date().getFullYear();
+const YMIN = 1868;
+const YMAX = Math.max(2029, Math.ceil((CUR + 1) / 10) * 10 - 1);
+
+const ERAS = [
+  { id:'meiji',  name:'明治', v:'--meiji',  s:1868, e:1912 },
+  { id:'taisho', name:'大正', v:'--taisho', s:1912, e:1926 },
+  { id:'showa',  name:'昭和', v:'--showa',  s:1926, e:1989 },
+  { id:'heisei', name:'平成', v:'--heisei', s:1989, e:2019 },
+  { id:'reiwa',  name:'令和', v:'--reiwa',  s:2019, e:null },
+];
+
+/* 改元年は両元号が有効。1行に収めるため後続元号側の開始日だけを出す */
+const TRANS = {
+  1912:['〜7/30','7/30〜'],
+  1926:['〜12/25','12/25〜'],
+  1989:['〜1/7','1/8〜'],
+  2019:['〜4/30','5/1〜'],
+};
+
+const endOf   = e => e.e === null ? YMAX : e.e;
+const erasFor = y => ERAS.filter(e => y >= e.s && y <= endOf(e));
+const eraYear = (e,y) => y - e.s + 1;
+const eyLabel = n => n === 1 ? '元' : String(n);
+const clamp   = (v,a,b) => Math.min(Math.max(v,a),b);
+/* 帯の見た目に合わせ、改元年は後続の元号側として扱う */
+const eraAt   = y => erasFor(y).slice(-1)[0];
+
+/* ================= 状態 ================= */
+const ROW = 48;                       /* 行の高さ。CSS と JS の唯一の出どころ */
+document.documentElement.style.setProperty('--row', ROW + 'px');
+
+let selected = CUR;
+let zoom = null;                      /* null = 全体 / era = その元号だけに閉じる */
+const range = () => zoom ? [zoom.s, endOf(zoom)] : [YMIN, YMAX];
+
+const $rail  = document.getElementById('rail');
+const $rows  = document.getElementById('rows');
+const $focus = document.getElementById('focus');
+const $band  = document.getElementById('band');
+const $segs  = document.getElementById('segs');
+const $caret = document.getElementById('caret');
+const $ticks = document.getElementById('ticks');
+const $bInfo = document.getElementById('bInfo');
+const $home  = document.getElementById('home');
+const $hint  = document.getElementById('hint');
+
+/* ================= レール ================= */
+function rowHTML(y){
+  const es = erasFor(y), t = TRANS[y], tr = es.length > 1;
+  const wa = es.map(e => `${e.name}${eyLabel(eraYear(e,y))}年`).join(' / ')
+           + (tr ? `<span class="dt">${t[1]}</span>` : '');
+  return `<div class="row${tr ? ' tr' : ''}" data-y="${y}">`
+       + `<span class="ry">${y}年</span><span class="rw">${wa}</span></div>`;
+}
+
+let midRow = null;
+
+function buildRail(){
+  const [a,b] = range();
+  let h = '';
+  for(let y = a; y <= b; y++) h += rowHTML(y);
+  midRow = null;
+  $rows.innerHTML = h;
+}
+
+function markRow(y){
+  const [a] = range();
+  if(midRow) midRow.classList.remove('mid');
+  midRow = $rows.children[y - a] || null;
+  if(midRow) midRow.classList.add('mid');
+  $focus.style.setProperty('--era', `var(${eraAt(y).v})`);
+}
+
+/* 帯から動かした直後はレールのスクロールイベントを無視し、往復ループを切る */
+let lockUntil = 0;
+function scrollRail(y){
+  const [a] = range();
+  lockUntil = performance.now() + 160;
+  $rail.scrollTop = (y - a) * ROW;
+}
+function railYear(){
+  const [a,b] = range();
+  return clamp(a + Math.round($rail.scrollTop / ROW), a, b);
+}
+
+/* 惰性が止まったら最近接の行へ寄せる。proximity で行間に止まったときの保険で、
+   ブラウザが吸着済みなら何もしない */
+let settleTimer = 0;
+function settle(){
+  const [a] = range();
+  const target = (selected - a) * ROW;
+  if(Math.abs($rail.scrollTop - target) < 1) return;
+  lockUntil = performance.now() + 500;
+  $rail.scrollTo({ top:target, behavior:'smooth' });
+}
+
+$rail.addEventListener('scroll', () => {
+  if(performance.now() < lockUntil) return;
+  const y = railYear();
+  if(y !== selected) setYear(y, true);
+  clearTimeout(settleTimer);
+  settleTimer = setTimeout(settle, 90);
+});
+
+/* 指を置いたら寄せ処理を打ち切り、すぐ追従に戻す */
+$rail.addEventListener('pointerdown', () => { lockUntil = 0; clearTimeout(settleTimer); });
+
+/* 見えている行をタップしたら中央へ寄せる */
+$rows.addEventListener('click', ev => {
+  const r = ev.target.closest('.row');
+  if(r) setYear(+r.dataset.y, false);
+});
+
+/* ================= 帯 ================= */
+const posCaret = y => {
+  const [a,b] = range(), n = b - a + 1;
+  $caret.style.left = ((y - a + 0.5) / n * 100) + '%';
+};
+
+function buildBand(){
+  const [a,b] = range(), n = b - a + 1;
+  if(zoom){
+    $segs.className = 'segs ruler';
+    $segs.style.setProperty('--era', `var(${zoom.v})`);
+    $segs.style.setProperty('--step', (100 / n) + '%');
+    $segs.innerHTML = '';
+    $bInfo.innerHTML = `<span class="nm">${zoom.name}</span><span class="rg">${a} – ${zoom.e ?? ''}</span>`;
+    $ticks.innerHTML = '';
+    $hint.textContent = 'タップで全体にもどる';
+  }else{
+    $segs.className = 'segs';
+    $segs.innerHTML = ERAS.map((e,i) => {
+      const next = ERAS[i+1] ? ERAS[i+1].s : YMAX + 1;
+      const w = (next - e.s) / n * 100;
+      return `<div class="seg" style="left:${(e.s - a) / n * 100}%;width:${w}%;background:rgb(var(${e.v}))">
+        <span class="lb${w > 14 ? ' wide' : ''}">${e.name}</span></div>`;
+    }).join('');
+    $bInfo.innerHTML = '';
+    let h = '';
+    for(let y = 1880; y <= b; y += 20) h += `<span style="left:${(y - a) / n * 100}%">${y}</span>`;
+    $ticks.innerHTML = h;
+    $hint.textContent = 'なぞる ／ 元号をタップで拡大';
+  }
+}
+
+/* 帯だけを短いフェードで差し替える。レールと答えは動かさない */
+let swapping = false;
+function setZoom(e, y){
+  if(swapping) return;                /* 連続タップで差し替えが重なるのを防ぐ */
+  swapping = true;
+  $segs.style.opacity = '0';
+  setTimeout(() => {
+    zoom = e;
+    buildBand();
+    buildRail();
+    const ny = clamp(y, ...range());
+    selected = ny;
+    markRow(ny);
+    posCaret(ny);
+    scrollRail(ny);
+    syncHome();
+    $segs.style.opacity = '1';
+    swapping = false;
+  }, 130);
+}
+
+/* ================= 年の確定 ================= */
+function setYear(y, fromRail){
+  selected = y;
+  markRow(y);
+  posCaret(y);
+  if(!fromRail) scrollRail(y);
+  syncHome();
+}
+
+/* ================= 今年に戻る ================= */
+/* 元号にドリルインしていても全体表示まで戻す完全リセット */
+function syncHome(){ $home.classList.toggle('off', !zoom && selected === CUR); }
+$home.addEventListener('click', () => {
+  if(zoom) setZoom(null, CUR);
+  else     setYear(CUR, false);
+});
+
+/* ================= 帯のなぞる／タップ ================= */
+const TAP_PX = 8, TAP_MS = 400;
+let downX = 0, downT = 0, moved = false, before = null;
+
+const yearAtX = cx => {
+  const [a,b] = range(), n = b - a + 1;
+  const r = $band.getBoundingClientRect();
+  return a + Math.floor(clamp((cx - r.left) / r.width, 0, 0.99999) * n);
+};
+
+$band.addEventListener('pointerdown', e => {
+  $band.setPointerCapture(e.pointerId);
+  downX = e.clientX; downT = Date.now(); moved = false;
+  before = selected;                  /* タップで戻る時に復元するため保持 */
+  setYear(yearAtX(e.clientX), false);
+});
+$band.addEventListener('pointermove', e => {
+  if(!$band.hasPointerCapture(e.pointerId)) return;
+  if(Math.abs(e.clientX - downX) > TAP_PX) moved = true;
+  setYear(yearAtX(e.clientX), false);
+});
+$band.addEventListener('pointerup', () => {
+  if(moved || Date.now() - downT >= TAP_MS) return;
+  const y = yearAtX(downX);
+  if(zoom) setZoom(null, before);     /* 逆操作: タップで全体へ。年はタップ前を保つ */
+  else     setZoom(eraAt(y), y);      /* タップした年をそのまま持ち込む */
+});
+
+/* ================= レールの行数を画面の高さに合わせる ================= */
+/* 高さが余ると上下が間延びし、足りないとはみ出すので、入る奇数行に合わせる。
+   奇数にするのは中央の1行を作るため */
+let vis = 0;
+function layoutRail(){
+  const avail = document.querySelector('.top').clientHeight;
+  let n = Math.floor(avail / ROW);
+  if(n % 2 === 0) n--;
+  n = clamp(n, 3, 7);
+  if(n === vis) return false;
+  vis = n;
+  const pad = (n - 1) / 2 * ROW;
+  $rail.style.height = n * ROW + 'px';
+  $rows.style.padding = pad + 'px 0';
+  $focus.style.top = pad + 'px';
+  return true;
+}
+
+/* 行数が変わったときだけ組み直す。スクロール中のツールバー開閉で暴れないように */
+addEventListener('resize', () => { if(layoutRail()) scrollRail(selected); });
+
+/* ================= 初期状態 ================= */
+buildBand();
+buildRail();
+layoutRail();
+markRow(CUR);
+posCaret(CUR);
+scrollRail(CUR);
+syncHome();
+
+/* ================= オフライン起動 ================= */
+/* file:// や非対応環境では登録できないので黙って諦める */
+if('serviceWorker' in navigator)
+  addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
+</script>
+</body>
+</html>
