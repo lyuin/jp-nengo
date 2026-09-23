@@ -48,7 +48,15 @@ body{
 
 /* ================= 上: フリックレール（中央行が答え） ================= */
 .top{ flex:1; min-height:0; display:flex; align-items:center; justify-content:center }
+.stack{ width:100% }
 .railWrap{ position:relative; width:100% }
+/* 年度。高さを固定しておき、1886年より前は中身だけ空にして表示をガタつかせない */
+.fy{
+  height:16px; margin-top:20px; padding:0 16px;
+  display:flex; align-items:baseline; justify-content:center; gap:9px; white-space:nowrap;
+}
+.fy .fyn{ font-weight:600; font-size:12px; line-height:1; color:var(--fg); opacity:.75 }
+.fy .fyr{ font-weight:400; font-size:11px; line-height:1; color:var(--sub) }
 
 /* 中央の枠。選択年の元号色で染める。
    height / top / padding は表示行数に応じて JS が設定する（下の値は初期値） */
@@ -133,9 +141,12 @@ body{
 <div id="app">
 
   <div class="top">
-    <div class="railWrap">
-      <div class="focus" id="focus"></div>
-      <div class="rail" id="rail"><div class="rows" id="rows"></div></div>
+    <div class="stack">
+      <div class="railWrap">
+        <div class="focus" id="focus"></div>
+        <div class="rail" id="rail"><div class="rows" id="rows"></div></div>
+      </div>
+      <div class="fy" id="fy"></div>
     </div>
   </div>
 
@@ -162,12 +173,14 @@ const CUR  = new Date().getFullYear();
 const YMIN = 1868;
 const YMAX = Math.max(2029, Math.ceil((CUR + 1) / 10) * 10 - 1);
 
+/* s / e は暦年の範囲。from / to は実際の改元日を YYYYMMDD で持つ（年度の判定に使う）。
+   明治→大正・大正→昭和は改元日が両元号に属するため from と to が重なる */
 const ERAS = [
-  { id:'meiji',  name:'明治', v:'--meiji',  s:1868, e:1912 },
-  { id:'taisho', name:'大正', v:'--taisho', s:1912, e:1926 },
-  { id:'showa',  name:'昭和', v:'--showa',  s:1926, e:1989 },
-  { id:'heisei', name:'平成', v:'--heisei', s:1989, e:2019 },
-  { id:'reiwa',  name:'令和', v:'--reiwa',  s:2019, e:null },
+  { id:'meiji',  name:'明治', v:'--meiji',  s:1868, e:1912, from:18681023, to:19120730 },
+  { id:'taisho', name:'大正', v:'--taisho', s:1912, e:1926, from:19120730, to:19261225 },
+  { id:'showa',  name:'昭和', v:'--showa',  s:1926, e:1989, from:19261225, to:19890107 },
+  { id:'heisei', name:'平成', v:'--heisei', s:1989, e:2019, from:19890108, to:20190430 },
+  { id:'reiwa',  name:'令和', v:'--reiwa',  s:2019, e:null, from:20190501, to:null     },
 ];
 
 /* 改元年は両元号が有効。1行に収めるため後続元号側の開始日だけを出す */
@@ -204,6 +217,7 @@ const $ticks = document.getElementById('ticks');
 const $bInfo = document.getElementById('bInfo');
 const $home  = document.getElementById('home');
 const $hint  = document.getElementById('hint');
+const $fy    = document.getElementById('fy');
 
 /* ================= レール ================= */
 function rowHTML(y){
@@ -320,10 +334,67 @@ function setZoom(e, y){
     posCaret(ny);
     scrollRail(ny);
     syncHome();
+    renderFiscal(ny);
+    syncHash();
     $segs.style.opacity = '1';
     swapping = false;
   }, 130);
 }
+
+/* ================= 年度（4月始まり） ================= */
+/* 年度 Y は Y年4月1日〜Y+1年3月31日。改元が年度の途中に起きると呼び名が2つになる
+   （例: 2019年度＝平成31年度＝令和元年度）。1989年は改元が1月なので平成元年度だけ。
+   4月始まりの年度は明治19年度（1886年）から。それ以前は区切りが違うので出さない。 */
+const FY_MIN = 1886;
+
+/* 年度の呼び名になれる元号は「暦年 y に存在し、かつ年度の期間にも存在する」ものだけ。
+   期間の重なりだけで判定すると、1988年度（途中で平成に改元）が平成元年度も名乗って
+   しまう。平成元年度は1989年4月からの別の年度なので誤り。 */
+function fiscalOf(y){
+  if(y < FY_MIN) return null;
+  const a = y * 10000 + 401, b = (y + 1) * 10000 + 331;   /* 年度の開始日と終了日 */
+  const act = erasFor(y).filter(e => e.from <= b && (e.to === null || e.to >= a));
+  if(!act.length) return null;
+  return {
+    names: act.map(e => `${e.name}${eyLabel(eraYear(e,y))}年度`).join(' / '),
+    span : `${y}年4月 – ${y + 1}年3月`,
+  };
+}
+
+function renderFiscal(y){
+  const f = fiscalOf(y);
+  $fy.innerHTML = f ? `<span class="fyn">${f.names}</span><span class="fyr">${f.span}</span>` : '';
+}
+
+/* ================= URL に年を持たせる ================= */
+/* Safari は replaceState を30秒あたり約100回に制限するので、間引いてから書き換える。
+   履歴は増やさない（戻るボタンが年を1つずつ遡らないように）。 */
+let hashTimer = 0;
+function syncHash(){
+  clearTimeout(hashTimer);
+  hashTimer = setTimeout(() => {
+    /* 今年のときはハッシュを消す。素のURLが常に「今日」を指し、来年以降もずれないため */
+    const h = selected === CUR ? '' : '#' + selected;
+    if(location.hash === h) return;
+    /* file:// では origin が null で例外になるため、失敗は黙って無視する */
+    try{ history.replaceState(null, '', location.pathname + location.search + h); }catch{}
+  }, 400);
+}
+
+function yearFromHash(){
+  const m = /^#(\d{4})$/.exec(location.hash);
+  if(!m) return null;
+  const y = +m[1];
+  return y >= YMIN && y <= YMAX ? y : null;
+}
+
+/* URL を直接書き換えたときも追従する */
+addEventListener('hashchange', () => {
+  const y = yearFromHash();
+  if(y === null || y === selected) return;
+  if(zoom) setZoom(null, y);
+  else     setYear(y, false);
+});
 
 /* ================= 年の確定 ================= */
 function setYear(y, fromRail){
@@ -332,6 +403,8 @@ function setYear(y, fromRail){
   posCaret(y);
   if(!fromRail) scrollRail(y);
   syncHome();
+  renderFiscal(y);
+  syncHash();
 }
 
 /* ================= 今年に戻る ================= */
@@ -392,13 +465,11 @@ function layoutRail(){
 addEventListener('resize', () => { if(layoutRail()) scrollRail(selected); });
 
 /* ================= 初期状態 ================= */
+/* URL に年があればそこから、無ければ今年から始める */
 buildBand();
 buildRail();
 layoutRail();
-markRow(CUR);
-posCaret(CUR);
-scrollRail(CUR);
-syncHome();
+setYear(yearFromHash() ?? CUR, false);
 
 /* ================= オフライン起動 ================= */
 /* file:// や非対応環境では登録できないので黙って諦める */
